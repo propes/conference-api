@@ -1,0 +1,12 @@
+### Create Conference
+POST http://localhost:5012/api/conferences
+Content-Type: application/json
+
+{
+  "name": "KindConf",
+  "startLocal": "2022-07-10T09:00:00",
+  "timeZoneId": "Europe/Amsterdam"
+}
+
+### Get Conference (replace the id with the id of the conference created)
+GET http://localhost:5012/api/conferences/a0979e24-60ff-48d0-8950-a3ac9aa11c69

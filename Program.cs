@@ -1,44 +1,73 @@
+using System.Text.Json;
+using Microsoft.Azure.Cosmos;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+});
+
+builder.Services.AddSingleton<CosmosClient>(sp =>
+{
+    var configuration = sp.GetRequiredService<IConfiguration>();
+    var cosmosSettings = configuration.GetSection("CosmosDb");
+    var options = new CosmosClientOptions
+    {
+        SerializerOptions = new CosmosSerializationOptions
+        {
+            PropertyNamingPolicy = CosmosPropertyNamingPolicy.CamelCase
+        }
+    };
+    return new CosmosClient(cosmosSettings["Endpoint"], cosmosSettings["Key"], options);
+});
+
+builder.Services.AddSingleton(sp =>
+{
+    var cosmosClient = sp.GetRequiredService<CosmosClient>();
+    var database = cosmosClient.CreateDatabaseIfNotExistsAsync("ConferenceDb").GetAwaiter().GetResult();
+    var container = database.Database.CreateContainerIfNotExistsAsync("Conferences", "/id").GetAwaiter().GetResult();
+    return container.Container;
+});
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
+app.MapPost("/api/conferences", async (UpdateConference request, Container container) =>
 {
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+    var conference = new Conference
+    {
+        Id = Guid.NewGuid().ToString(),
+        Name = request.Name,
+        StartLocal = request.StartLocal,
+        TimeZoneId = request.TimeZoneId,
+        DateModifiedUtc = DateTime.UtcNow
+    };
 
-app.UseHttpsRedirection();
+    await container.CreateItemAsync(conference, new PartitionKey(conference.Id));
+    return Results.Created($"/api/conferences/{conference.Id}", conference);
+});
 
-var summaries = new[]
+app.MapGet("/api/conferences/{id}", async (string id, Container container) =>
 {
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
+    try
+    {
+        var response = await container.ReadItemAsync<Conference>(id, new PartitionKey(id));
+        var conference = response.Resource;
 
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast")
-.WithOpenApi();
+        var dto = new ConferenceDto
+        {
+            Name = conference.Name,
+            StartLocal = conference.StartLocal,
+            TimeZoneId = conference.TimeZoneId,
+            StartUtc = DateTimeHelper.ConvertToUtc(conference.StartLocal, conference.TimeZoneId)
+        };
+
+        return Results.Ok(dto);
+    }
+    catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+    {
+        return Results.NotFound();
+    }
+});
 
 app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
